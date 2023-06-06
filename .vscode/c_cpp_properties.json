@@ -1,0 +1,11 @@
+{
+    "configurations": [
+        {
+            "name": "Ubuntu",
+            "includePath": [
+                "/usr/include/opencv4/"
+            ]
+        }
+    ],
+    "version": 4
+}
