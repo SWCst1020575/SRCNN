@@ -13,12 +13,10 @@
 
 ////////////////////////////////////////////////////////////////////////////////
 #include <pthread.h>
-#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-#include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <string>
 #ifndef NO_OMP
 #include <omp.h>
@@ -31,6 +29,9 @@
 #include "convdata.h"
 #include "convdataCuda.cuh"
 ////////////////////////////////////////////////////////////////////////////////
+
+#define THREAD 256
+#define BLOCK 1024
 
 static float image_multiply = 2.0f;
 static unsigned image_width = 0;
@@ -61,11 +62,8 @@ void Convolution11(std::vector<cv::Mat>& src, cv::Mat& dst,
 void Convolution55(std::vector<cv::Mat>& src, cv::Mat& dst,
                    const float kernel[32][5][5], float bias);
 
-void Convolution99x11(cv::Mat& src, std::vector<cv::Mat>& dst,
-                      const float kernel99[CONV1_FILTERS][9][9],
-                      const float bias99[CONV1_FILTERS],
-                      const float kernel11[CONV2_FILTERS][CONV1_FILTERS],
-                      const float bias11[CONV2_FILTERS]);
+__global__ void Convolution99x11(cv::Mat& src, std::vector<cv::Mat>& dst,
+                                 int height, int width);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -226,67 +224,61 @@ void Convolution55(std::vector<cv::Mat>& src, cv::Mat& dst, const float kernel[3
  *        bias - the cell bias
  * Output   : <void>
  ***/
-void Convolution99x11(cv::Mat& src, std::vector<cv::Mat>& dst,
-                      const float kernel99[CONV1_FILTERS][9][9],
-                      const float bias99[CONV1_FILTERS],
-                      const float kernel11[CONV2_FILTERS][CONV1_FILTERS],
-                      const float bias11[CONV2_FILTERS]) {
-    int row = 0;
-    int col = 0;
-    int height = src.rows;
-    int width = src.cols;
-    float temp[CONV1_FILTERS] = {0.f};
-    // macOS llvm not able to init zero.
-    int rowf[height + 8];
-    int colf[width + 8];
+__global__ void Convolution99x11(cv::Mat& src, std::vector<cv::Mat>& dst,
+                                 int height, int width) {
+    // int row = 0;
+    // int col = 0;
+    // height = src.rows;
+    // width = src.cols;
+    // float temp[CONV1_FILTERS] = {0.f};
+    // // macOS llvm not able to init zero.
+    // // int rowf[height + 8];
+    // // int colf[width + 8];
 
-/* Expand the src image */
-#pragma omp parallel for
-    for (row = 0; row < height + 8; row++) {
-        rowf[row] = IntTrim(0, height - 1, row - 4);
-    }
+    // /* Expand the src image */
+    // for (row = 0; row < height + 8; row++) {
+    //     rowf[row] = IntTrim(0, height - 1, row - 4);
+    // }
 
-#pragma omp parallel for
-    for (col = 0; col < width + 8; col++) {
-        colf[col] = IntTrim(0, width - 1, col - 4);
-    }
+    // for (col = 0; col < width + 8; col++) {
+    //     colf[col] = IntTrim(0, width - 1, col - 4);
+    // }
 
-/* Complete the Convolution Step */
-#pragma omp parallel for private(col, temp) shared(dst)
-    for (row = 0; row < height; row++) {
-        for (col = 0; col < width; col++) {
-            for (int k = 0; k < CONV1_FILTERS; k++) {
-                /* Convolution */
-                temp[k] = 0.0;
+    // /* Complete the Convolution Step */
+    // for (row = 0; row < height; row++) {
+    //     for (col = 0; col < width; col++) {
+    //         for (int k = 0; k < CONV1_FILTERS; k++) {
+    //             /* Convolution */
+    //             temp[k] = 0.0;
 
-                for (int i = 0; i < 9; i++) {
-                    for (int j = 0; j < 9; j++) {
-                        temp[k] += kernel99[k][i][j] * src.at<uint8_t>(rowf[row + i], colf[col + j]);
-                    }
-                }
+    //             for (int i = 0; i < 9; i++) {
+    //                 for (int j = 0; j < 9; j++) {
+    //                     temp[k] += weights_conv1_data_cuda[k][i][j] * src.at<uint8_t>(rowf[row + i], colf[col + j]);
+    //                 }
+    //             }
 
-                temp[k] += bias99[k];
+    //             temp[k] += biases_conv1_cuda[k];
 
-                /* Threshold */
-                temp[k] = (temp[k] < 0) ? 0 : temp[k];
-            }
+    //             /* Threshold */
+    //             temp[k] = (temp[k] < 0) ? 0 : temp[k];
+    //         }
 
-            /* Process with each pixel */
-            for (int k = 0; k < CONV2_FILTERS; k++) {
-                float result = 0.0;
+    //         /* Process with each pixel */
+    //         for (int k = 0; k < CONV2_FILTERS; k++) {
+    //             float result = 0.0;
 
-                for (int i = 0; i < CONV1_FILTERS; i++) {
-                    result += temp[i] * kernel11[k][i];
-                }
-                result += bias11[k];
+    //             for (int i = 0; i < CONV1_FILTERS; i++) {
+    //                 result += temp[i] * weights_conv2_data_cuda[k][i];
+    //             }
+    //             result += biases_conv2_cuda[k];
 
-                /* Threshold */
-                result = (result < 0) ? 0 : result;
+    //             /* Threshold */
+    //             result = (result < 0) ? 0 : result;
 
-                dst[k].at<float>(row, col) = result;
-            }
-        }
-    }
+    //             dst[k].at<float>(row, col) = result;
+    //         }
+    //     }
+    // }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -512,15 +504,27 @@ void* pthreadcall(void* p) {
 
     std::vector<cv::Mat> pImgConv2(CONV2_FILTERS);
     start = tick::getTickCount();
+
 #pragma omp parallel for
     for (unsigned cnt = 0; cnt < CONV2_FILTERS; cnt++) {
         pImgConv2[cnt].create(pImg[0].size(), CV_32F);
     }
     end = tick::getTickCount();
     printf("\n  create: %u ms.", end - start);
+
     start = tick::getTickCount();
-    Convolution99x11(pImg[0], pImgConv2, weights_conv1_data, biases_conv1, weights_conv2_data, biases_conv2);
+    // cv::cuda::GpuMat srcImg;
+    // cv::cuda::GpuMat dstImg[CONV2_FILTERS];
+
+    uchar3* srcImg;
+    float3* dstImg;
+    cudaMalloc(&srcImg, pImg[0].cols * pImg[0].rows * sizeof(uchar3));
+    cudaMalloc(&dstImg, pImg[0].cols * pImg[0].rows * sizeof(uchar3) * CONV2_FILTERS);
+    cudaMemcpy(srcImg, pImg[0].ptr<uchar3>(0), pImg[0].cols * pImg[0].rows * sizeof(uchar3), cudaMemcpyHostToDevice);
+    // Convolution99x11<<<BLOCK, THREAD>>>(pImg[0], pImgConv2, pImg[0].rows, pImg[0].cols);
+    // cudaDeviceSynchronize();
     end = tick::getTickCount();
+
     printf("\n  Convolution: %u ms.\n", end - start);
     if (opt_verbose == true) {
         printf("completed.\n");
@@ -545,7 +549,7 @@ void* pthreadcall(void* p) {
         printf("- Merging images : ");
         fflush(stdout);
     }
-
+    cudaDeviceReset();
     /* Merge the Y-Cr-Cb Channel into an image */
     start = tick::getTickCount();
     cv::Mat pImgYCrCbOut;
@@ -620,7 +624,6 @@ int main(int argc, char** argv) {
 
     pthread_t ptt;
     int tid = 0;
-
     if (pthread_create(&ptt, NULL, pthreadcall, &tid) == 0) {
         // Wait for thread ends ..
         pthread_join(ptt, NULL);

@@ -3,11 +3,13 @@
 
 #ifndef EXPORTLIBSRCNN
 
-#include <opencv2/core/core.hpp>
-#include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/types_c.h>
+
+#include <opencv2/core/core.hpp>
+#include <opencv2/core/cuda.hpp>
+#include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
+#include <cuda_runtime.h>
+#endif  /// of EXPORTLIBSRCNN
 
-#endif /// of EXPORTLIBSRCNN
-
-#endif /// of __SRCNN_H__
+#endif  /// of __SRCNN_H__

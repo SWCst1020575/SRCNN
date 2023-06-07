@@ -1,5 +1,5 @@
-#ifndef __CONVDATA_H__
-#define __CONVDATA_H__
+#ifndef __CONVDATACUDA_CUH__
+#define __CONVDATACUDA_CUH__
 
 // the first convolutional layer size
 #define CONV1_FILTERS       64

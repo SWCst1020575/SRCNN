@@ -620,13 +620,13 @@ int main(int argc, char** argv) {
 
     pthread_t ptt;
     int tid = 0;
-
-    if (pthread_create(&ptt, NULL, pthreadcall, &tid) == 0) {
-        // Wait for thread ends ..
-        pthread_join(ptt, NULL);
-    } else {
-        printf("Error: pthread failure.\n");
-    }
+    printf("CUDA CV:%d\n", cv::cuda::getCudaEnabledDeviceCount());
+    // if (pthread_create(&ptt, NULL, pthreadcall, &tid) == 0) {
+    //     // Wait for thread ends ..
+    //     pthread_join(ptt, NULL);
+    // } else {
+    //     printf("Error: pthread failure.\n");
+    // }
 
     return t_exit_code;
 }

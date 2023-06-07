@@ -16,11 +16,12 @@ TARGET   = srcnn
 
 SRCS += $(SRC_PATH)/frawscale.cpp
 SRCS += $(SRC_PATH)/tick.cpp
-SRCS += $(SRC_PATH)/srcnn.cpp
+# SRCS += $(SRC_PATH)/srcnn.cpp
 SRCS += $(SRC_PATH)/convdata.cpp
 OBJS = $(SRCS:$(SRC_PATH)/%.cpp=$(OBJ_PATH)/%.o)
 
 SRCS_CUDA = $(SRC_PATH)/convdataCuda.cu
+SRCS_CUDA += $(SRC_PATH)/srcnn.cu
 OBJS_CUDA = $(SRCS_CUDA:$(SRC_PATH)/%.cu=$(OBJ_PATH)/%.o)
 
 CFLAGS  = -Xcompiler -mtune=native -Xcompiler -fopenmp -rdc=true
@@ -30,7 +31,7 @@ CFLAGS += $(OPENCV_INCS)
 # Static build may require static-configured openCV.
 LFLAGS  =
 LFLAGS += $(OPENCV_LIBS)
-# LFLAGS += -static-libgcc -static-libstdc++
+LFLAGS += -Xcompiler -static-libgcc -Xcompiler -static-libstdc++
 # LFLAGS += -s -ffast-math -O3
 
 all: prepare $(BIN_PATH)/$(TARGET)
