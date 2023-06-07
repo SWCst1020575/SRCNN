@@ -1,8 +1,8 @@
 #ifndef __TICK_H__
 #define __TICK_H__
 
-namespace tick{
+namespace tick {
 unsigned long getTickCount();
 };
 
-#endif /// of __TICK_H__
+#endif  /// of __TICK_H__

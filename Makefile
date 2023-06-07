@@ -3,6 +3,7 @@
 
 CPP = gcc
 CXX = g++
+CUDA = nvcc
 AR  = ar
 
 OPENCV_INCS := `pkg-config --cflags opencv4`
@@ -16,17 +17,21 @@ TARGET   = srcnn
 SRCS += $(SRC_PATH)/frawscale.cpp
 SRCS += $(SRC_PATH)/tick.cpp
 SRCS += $(SRC_PATH)/srcnn.cpp
+SRCS += $(SRC_PATH)/convdata.cpp
 OBJS = $(SRCS:$(SRC_PATH)/%.cpp=$(OBJ_PATH)/%.o)
 
-CFLAGS  = -mtune=native -fopenmp
+SRCS_CUDA = $(SRC_PATH)/convdataCuda.cu
+OBJS_CUDA = $(SRCS_CUDA:$(SRC_PATH)/%.cu=$(OBJ_PATH)/%.o)
+
+CFLAGS  = -Xcompiler -mtune=native -Xcompiler -fopenmp -rdc=true
 CFLAGS += -I$(SRC_PATH)
 CFLAGS += $(OPENCV_INCS)
 
 # Static build may require static-configured openCV.
 LFLAGS  =
 LFLAGS += $(OPENCV_LIBS)
-LFLAGS += -static-libgcc -static-libstdc++
-LFLAGS += -s -ffast-math -O3
+# LFLAGS += -static-libgcc -static-libstdc++
+# LFLAGS += -s -ffast-math -O3
 
 all: prepare $(BIN_PATH)/$(TARGET)
 
@@ -40,8 +45,12 @@ clean:
 
 $(OBJS): $(OBJ_PATH)/%.o: $(SRC_PATH)/%.cpp
 	@echo "Compiling $< ..."
-	@$(CXX) $(CFLAGS) -c $< -o $@
+	@$(CUDA) $(CFLAGS) -c $< -o $@
 
-$(BIN_PATH)/$(TARGET): $(OBJS)
+$(OBJS_CUDA): $(OBJ_PATH)/%.o: $(SRC_PATH)/%.cu
+	@echo "Compiling $< ..."
+	@$(CUDA) $(CFLAGS) -c $< -o $@
+
+$(BIN_PATH)/$(TARGET): $(OBJS) $(OBJS_CUDA)
 	@echo "Linking $@ ..."
-	@$(CXX) $(OBJ_PATH)/*.o $(CFLAGS) $(LFLAGS) -o $@
+	@$(CUDA) $(OBJ_PATH)/*.o $(CFLAGS) $(LFLAGS) -o $@

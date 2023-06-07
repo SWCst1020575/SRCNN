@@ -29,7 +29,7 @@
 
 /* pre-calculated convolutional data */
 #include "convdata.h"
-
+#include "convdataCuda.cuh"
 ////////////////////////////////////////////////////////////////////////////////
 
 static float image_multiply = 2.0f;
