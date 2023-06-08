@@ -62,8 +62,7 @@ void Convolution11(std::vector<cv::Mat>& src, cv::Mat& dst,
 void Convolution55(std::vector<cv::Mat>& src, cv::Mat& dst,
                    const float kernel[32][5][5], float bias);
 
-__global__ void Convolution99x11(cv::Mat& src, std::vector<cv::Mat>& dst,
-                                 int height, int width);
+__global__ void Convolution99x11(uchar1* src, float* dst, int* rowf, int* colf, int height, int width);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -71,7 +70,10 @@ static inline int IntTrim(int a, int b, int c) {
     int buff[3] = {a, c, b};
     return buff[(int)(c > a) + (int)(c > b)];
 }
-
+__device__ static inline int IntTrimCuda(int a, int b, int c) {
+    int buff[3] = {a, c, b};
+    return buff[(int)(c > a) + (int)(c > b)];
+}
 /***
  * FuncName : Convolution99
  * Function : Complete one cell in the first Convolutional Layer
@@ -224,61 +226,65 @@ void Convolution55(std::vector<cv::Mat>& src, cv::Mat& dst, const float kernel[3
  *        bias - the cell bias
  * Output   : <void>
  ***/
-__global__ void Convolution99x11(cv::Mat& src, std::vector<cv::Mat>& dst,
-                                 int height, int width) {
-    // int row = 0;
-    // int col = 0;
-    // height = src.rows;
-    // width = src.cols;
-    // float temp[CONV1_FILTERS] = {0.f};
-    // // macOS llvm not able to init zero.
-    // // int rowf[height + 8];
-    // // int colf[width + 8];
+__global__ void intTrim(int* rowf, int* colf, int height, int width) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx < height + 8)
+        rowf[idx] = IntTrimCuda(0, height - 1, idx - 4);
+    if (idx < width + 8)
+        colf[idx] = IntTrimCuda(0, width - 1, idx - 4);
+}
+__global__ void Convolution99x11(uchar1* src, float* dst, int* rowf, int* colf, int height, int width) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    int row = 0;
+    int col = 0;
+    float temp[CONV1_FILTERS] = {0.f};
+    // macOS llvm not able to init zero.
 
-    // /* Expand the src image */
-    // for (row = 0; row < height + 8; row++) {
-    //     rowf[row] = IntTrim(0, height - 1, row - 4);
-    // }
+    /* Expand the src image */
+    /* for (row = 0; row < height + 8; row++) {
+        rowf[row] = IntTrimCuda(0, height - 1, row - 4);
+    }
 
-    // for (col = 0; col < width + 8; col++) {
-    //     colf[col] = IntTrim(0, width - 1, col - 4);
-    // }
+    for (col = 0; col < width + 8; col++) {
+        colf[col] = IntTrimCuda(0, width - 1, col - 4);
+    } */
 
-    // /* Complete the Convolution Step */
-    // for (row = 0; row < height; row++) {
-    //     for (col = 0; col < width; col++) {
-    //         for (int k = 0; k < CONV1_FILTERS; k++) {
-    //             /* Convolution */
-    //             temp[k] = 0.0;
+    /* Complete the Convolution Step */
+    if (idx > width * height)
+        return;
+    row = idx / width;
+    col = idx % width;
+    for (int k = 0; k < CONV1_FILTERS; k++) {
+        /* Convolution */
+        temp[k] = 0.0;
 
-    //             for (int i = 0; i < 9; i++) {
-    //                 for (int j = 0; j < 9; j++) {
-    //                     temp[k] += weights_conv1_data_cuda[k][i][j] * src.at<uint8_t>(rowf[row + i], colf[col + j]);
-    //                 }
-    //             }
+        for (int i = 0; i < 9; i++) {
+            for (int j = 0; j < 9; j++) {
+                temp[k] += weights_conv1_data_cuda[k][i][j] * src[rowf[row + i] * width * 3 + colf[col + j]].x;
+                // temp[k] += weights_conv1_data_cuda[k][i][j] * src.at<uint8_t>(rowf[row + i], colf[col + j]);
+            }
+        }
 
-    //             temp[k] += biases_conv1_cuda[k];
+        temp[k] += biases_conv1_cuda[k];
 
-    //             /* Threshold */
-    //             temp[k] = (temp[k] < 0) ? 0 : temp[k];
-    //         }
+        /* Threshold */
+        temp[k] = (temp[k] < 0) ? 0 : temp[k];
+    }
 
-    //         /* Process with each pixel */
-    //         for (int k = 0; k < CONV2_FILTERS; k++) {
-    //             float result = 0.0;
+    /* Process with each pixel */
+    for (int k = 0; k < CONV2_FILTERS; k++) {
+        float result = 0.0;
 
-    //             for (int i = 0; i < CONV1_FILTERS; i++) {
-    //                 result += temp[i] * weights_conv2_data_cuda[k][i];
-    //             }
-    //             result += biases_conv2_cuda[k];
+        for (int i = 0; i < CONV1_FILTERS; i++) {
+            result += temp[i] * weights_conv2_data_cuda[k][i];
+        }
+        result += biases_conv2_cuda[k];
 
-    //             /* Threshold */
-    //             result = (result < 0) ? 0 : result;
-
-    //             dst[k].at<float>(row, col) = result;
-    //         }
-    //     }
-    // }
+        /* Threshold */
+        result = (result < 0) ? 0 : result;
+        dst[k * width * height * 3 + row * 3 * width + col] = result;
+        // dst[k].at<float>(row, col) = result;
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -505,10 +511,10 @@ void* pthreadcall(void* p) {
     std::vector<cv::Mat> pImgConv2(CONV2_FILTERS);
     start = tick::getTickCount();
 
-#pragma omp parallel for
-    for (unsigned cnt = 0; cnt < CONV2_FILTERS; cnt++) {
-        pImgConv2[cnt].create(pImg[0].size(), CV_32F);
-    }
+    // #pragma omp parallel for
+    //     for (unsigned cnt = 0; cnt < CONV2_FILTERS; cnt++) {
+    //         pImgConv2[cnt].create(pImg[0].size(), CV_32F);
+    //     }
     end = tick::getTickCount();
     printf("\n  create: %u ms.", end - start);
 
@@ -516,13 +522,31 @@ void* pthreadcall(void* p) {
     // cv::cuda::GpuMat srcImg;
     // cv::cuda::GpuMat dstImg[CONV2_FILTERS];
 
-    uchar3* srcImg;
-    float3* dstImg;
-    cudaMalloc(&srcImg, pImg[0].cols * pImg[0].rows * sizeof(uchar3));
-    cudaMalloc(&dstImg, pImg[0].cols * pImg[0].rows * sizeof(uchar3) * CONV2_FILTERS);
-    cudaMemcpy(srcImg, pImg[0].ptr<uchar3>(0), pImg[0].cols * pImg[0].rows * sizeof(uchar3), cudaMemcpyHostToDevice);
+    uchar1* srcImg;
+    float* dstImg;
+    float* pImgConv2Float = (float*)malloc(pImg[0].cols * pImg[0].rows * sizeof(float) * 3 * CONV2_FILTERS);
+    int* rowf;
+    int* colf;
+
+    cudaMalloc(&rowf, (pImg[0].cols + 8) * sizeof(int));
+    cudaMalloc(&colf, (pImg[0].rows + 8) * sizeof(int));
+    cudaMalloc(&srcImg, pImg[0].cols * pImg[0].rows * sizeof(uchar1) * 3);
+    cudaMalloc(&dstImg, pImg[0].cols * pImg[0].rows * sizeof(float) * 3 * CONV2_FILTERS);
+    printf("\ncuda malloc complete\n");
+    cudaMemcpy(srcImg, pImg[0].data, pImg[0].cols * pImg[0].rows * sizeof(uchar1), cudaMemcpyHostToDevice);
+    printf("cuda memcpy complete\n");
     // Convolution99x11<<<BLOCK, THREAD>>>(pImg[0], pImgConv2, pImg[0].rows, pImg[0].cols);
+    intTrim<<<16, THREAD>>>(rowf, colf, pImg[0].rows, pImg[0].cols);
+    cudaDeviceSynchronize();
+    Convolution99x11<<<BLOCK, THREAD>>>(srcImg, dstImg, rowf, colf, pImg[0].rows, pImg[0].cols);
+    cudaDeviceSynchronize();
+    printf("cuda Convolution99x11 complete\n");
+    cudaMemcpy(pImgConv2Float, dstImg, pImg[0].cols * pImg[0].rows * sizeof(float) * 3 * CONV2_FILTERS, cudaMemcpyDeviceToHost);
+    printf("cuda memcpy complete\n");
+    for (int i = 0; i < CONV2_FILTERS; i++)
+        pImgConv2[i] = cv::Mat(pImg[0].size(), CV_32F, &(pImgConv2Float[i * pImg[0].cols * pImg[0].rows * 3])).clone();
     // cudaDeviceSynchronize();
+    free(pImgConv2Float);
     end = tick::getTickCount();
 
     printf("\n  Convolution: %u ms.\n", end - start);
