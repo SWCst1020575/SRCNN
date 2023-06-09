@@ -26,13 +26,17 @@ namespace tick {
 unsigned long getTickCount() {
     static time_t secStart = timeStart.tv_.tv_sec;
     static time_t usecStart = timeStart.tv_.tv_usec;
-
     timeval tv;
     gettimeofday(&tv, NULL);
 
     return (tv.tv_sec - secStart) * 1000 + (tv.tv_usec - usecStart) / 1000;
 }
-
+std::chrono::_V2::steady_clock::time_point getCurrent() {
+    return std::chrono::steady_clock::now();
+}
+unsigned long getDiff(std::chrono::_V2::steady_clock::time_point start, std::chrono::_V2::steady_clock::time_point end) {
+    return std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+}
 };  // namespace tick
 
 #endif  /// of _MSC_VER

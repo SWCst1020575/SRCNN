@@ -24,7 +24,7 @@ SRCS_CUDA = $(SRC_PATH)/convdataCuda.cu
 SRCS_CUDA += $(SRC_PATH)/srcnn.cu
 OBJS_CUDA = $(SRCS_CUDA:$(SRC_PATH)/%.cu=$(OBJ_PATH)/%.o)
 
-CFLAGS  = -Xcompiler -mtune=native -Xcompiler -fopenmp -rdc=true
+CFLAGS  =  -Xcompiler -fopenmp -rdc=true
 CFLAGS += -I$(SRC_PATH)
 CFLAGS += $(OPENCV_INCS)
 
@@ -32,7 +32,7 @@ CFLAGS += $(OPENCV_INCS)
 LFLAGS  =
 LFLAGS += $(OPENCV_LIBS)
 LFLAGS += -Xcompiler -static-libgcc -Xcompiler -static-libstdc++
-# LFLAGS += -s -ffast-math -O3
+LFLAGS += -Xcompiler -s -Xcompiler -ffast-math -O3
 
 all: prepare $(BIN_PATH)/$(TARGET)
 
