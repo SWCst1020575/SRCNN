@@ -83,6 +83,13 @@ The repo is released under the GPL v2 License (refer to the LICENSE file for det
     cmake -G "MSYS Makefiles" -DBUILD_SHARED_LIBS=OFF -DENABLE_PRECOMPILED_HEADERS=OFF -DWITH_IPP=OFF -DWITH_TBB=OFF -DWITH_FFMPEG=OFF -DWITH_MSMF=OFF -DWITH_VFW=OFF -DWITH_OPENMP=ON ..
     ```      
     - This project doesn't using video decoding, and there's too many erorrs occurs on Video processing source in OpenCV ( damn sucks cmake options, they're useless )
+1. Install cuda toolkit
+    - Follow this [link](https://developer.nvidia.com/cuda-12-0-0-download-archive).
+1. Install FFmpeg
+    - For linux Debian, Ubuntu.
+    ```bash
+    sudo apt-get install libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
+    ```
 
 
 ### Compile and Use
