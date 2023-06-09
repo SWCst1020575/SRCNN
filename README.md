@@ -84,7 +84,8 @@ The repo is released under the GPL v2 License (refer to the LICENSE file for det
     ```      
     - This project doesn't using video decoding, and there's too many erorrs occurs on Video processing source in OpenCV ( damn sucks cmake options, they're useless )
 1. Install cuda toolkit
-    - Follow this [link](https://developer.nvidia.com/cuda-12-0-0-download-archive).
+    - Follow this [link](https://developer.nvidia.com/cuda-12-0-0-download-archive). (cuda 12.0)
+    - Please check your cuda version with *nvidia-smi* at first.
 1. Install FFmpeg
     - For linux Debian, Ubuntu.
     ```bash
