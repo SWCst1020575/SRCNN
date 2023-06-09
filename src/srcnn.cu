@@ -59,8 +59,7 @@ void Convolution99(cv::Mat& src, cv::Mat& dst,
 void Convolution11(std::vector<cv::Mat>& src, cv::Mat& dst,
                    const float kernel[CONV1_FILTERS], float bias);
 
-void Convolution55(std::vector<cv::Mat>& src, cv::Mat& dst,
-                   const float kernel[32][5][5], float bias);
+__global__ void Convolution55(float* src, unsigned char* dst, int* rowf, int* colf, int height, int width);
 
 __global__ void Convolution99x11(unsigned char* src, float* dst, int* rowf, int* colf, int height, int width);
 
@@ -169,51 +168,38 @@ void Convolution11(std::vector<cv::Mat>& src, cv::Mat& dst, const float kernel[C
  *        bias - the cell bias
  * Output   : <void>
  ***/
-void Convolution55(std::vector<cv::Mat>& src, cv::Mat& dst, const float kernel[32][5][5], float bias) {
-    int height = dst.rows;
-    int width = dst.cols;
+__global__ void Convolution55(float* src, unsigned char* dst, int* rowf, int* colf, int height, int width) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
     int row = 0;
     int col = 0;
-    // macOS these array not be initalized by zero.
-    int rowf[height + 4];
-    int colf[width + 4];
 
-/* Expand the src image */
-#pragma omp parallel for
-    for (row = 0; row < height + 4; row++) {
-        rowf[row] = IntTrim(0, height - 1, row - 2);
-    }
-
-#pragma omp parallel for
-    for (col = 0; col < width + 4; col++) {
-        colf[col] = IntTrim(0, width - 1, col - 2);
-    }
-
-/* Complete the Convolution Step */
-#pragma omp parallel for private(col)
-    for (row = 0; row < height; row++) {
-        for (col = 0; col < width; col++) {
-            float temp = 0;
-
-            for (int i = 0; i < CONV2_FILTERS; i++) {
-                double temppixel = 0;
-                for (int m = 0; m < 5; m++) {
-                    for (int n = 0; n < 5; n++) {
-                        temppixel +=
-                            kernel[i][m][n] * src[i].at<float>(rowf[row + m], colf[col + n]);
-                    }
+    /* Complete the Convolution Step */
+    for (int id = idx; id < width * height; id += THREAD * BLOCK) {
+        row = id / width;
+        col = id % width;
+        float temp = 0;
+        for (int i = 0; i < CONV2_FILTERS; i++) {
+            double temppixel = 0;
+#pragma unroll
+            for (int m = 0; m < 5; m++) {
+#pragma unroll
+                for (int n = 0; n < 5; n++) {
+                    // temppixel +=
+                    //     weights_conv3_data_cuda[i][m][n] * src[i].at<float>(rowf[row + m], colf[col + n]);
+                    temppixel += weights_conv3_data_cuda[i][m][n] * src[i * width * height + rowf[row + m] * width + colf[col + n]];
                 }
-
-                temp += temppixel;
             }
 
-            temp += bias;
-
-            /* Threshold */
-            temp = IntTrim(0, 255, temp);
-
-            dst.at<unsigned char>(row, col) = (unsigned char)temp;
+            temp += temppixel;
         }
+
+        temp += biases_conv3_cuda;
+
+        /* Threshold */
+        temp = IntTrimCuda(0, 255, temp);
+
+        // dst.at<unsigned char>(row, col) = (unsigned char)temp;
+        dst[row * width + col] = (unsigned char)temp;
     }
 }
 
@@ -233,23 +219,18 @@ __global__ void intTrimData(int* rowf, int* colf, int height, int width) {
     for (int i = idx; i < width + 8; i += blockDim.x * gridDim.x)
         colf[i] = IntTrimCuda(0, width - 1, i - 4);
 }
+__global__ void intTrimData2(int* rowf, int* colf, int height, int width) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    for (int i = idx; i < height + 4; i += blockDim.x * gridDim.x)
+        rowf[i] = IntTrimCuda(0, height - 1, i - 2);
+    for (int i = idx; i < width + 4; i += blockDim.x * gridDim.x)
+        colf[i] = IntTrimCuda(0, width - 1, i - 2);
+}
 __global__ void Convolution99x11(unsigned char* src, float* dst, int* rowf, int* colf, int height, int width) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     int row = 0;
     int col = 0;
     float temp[CONV1_FILTERS] = {0.f};
-
-    // macOS llvm not able to init zero.
-
-    /* Expand the src image */
-    /* for (row = 0; row < height + 8; row++) {
-        rowf[row] = IntTrimCuda(0, height - 1, row - 4);
-    }
-
-    for (col = 0; col < width + 8; col++) {
-        colf[col] = IntTrimCuda(0, width - 1, col - 4);
-    } */
-
     /* Complete the Convolution Step */
     for (int id = idx; id < width * height; id += THREAD * BLOCK) {
         row = id / width;
@@ -257,8 +238,9 @@ __global__ void Convolution99x11(unsigned char* src, float* dst, int* rowf, int*
         for (int k = 0; k < CONV1_FILTERS; k++) {
             /* Convolution */
             temp[k] = 0.0;
-
+#pragma unroll
             for (int i = 0; i < 9; i++) {
+#pragma unroll
                 for (int j = 0; j < 9; j++) {
                     temp[k] += weights_conv1_data_cuda[k][i][j] * src[rowf[row + i] * width + colf[col + j]];
                     // temp[k] += weights_conv1_data_cuda[k][i][j] * src.at<uint8_t>(rowf[row + i], colf[col + j]);
@@ -274,7 +256,7 @@ __global__ void Convolution99x11(unsigned char* src, float* dst, int* rowf, int*
         /* Process with each pixel */
         for (int k = 0; k < CONV2_FILTERS; k++) {
             float result = 0.0;
-
+#pragma unroll
             for (int i = 0; i < CONV1_FILTERS; i++) {
                 result += temp[i] * weights_conv2_data_cuda[k][i];
             }
@@ -518,41 +500,37 @@ void* pthreadcall(void* p) {
     end = tick::getCurrent();
     printf("\n  create: %u us.", tick::getDiff(start, end));
 
-    // cv::cuda::GpuMat srcImg;
-    // cv::cuda::GpuMat dstImg[CONV2_FILTERS];
+    // first conv
 
     unsigned char* srcImg;
-    float* dstImg;
-    float* pImgConv2Float = (float*)malloc(pImg[0].cols * pImg[0].rows * sizeof(float) * CONV2_FILTERS);
+    float* firstConv;
     int* rowf;
     int* colf;
+    unsigned char* dstImg;
 
     cudaMalloc(&rowf, (pImg[0].cols + 8) * sizeof(int));
     cudaMalloc(&colf, (pImg[0].rows + 8) * sizeof(int));
-    cudaMalloc(&srcImg, pImg[0].cols * pImg[0].rows * sizeof(unsigned char));
-    cudaMalloc(&dstImg, pImg[0].cols * pImg[0].rows * sizeof(float) * CONV2_FILTERS);
+    
     printf("\ncuda malloc complete\n");
+
     cudaMemcpy(srcImg, pImg[0].data, pImg[0].cols * pImg[0].rows * sizeof(unsigned char), cudaMemcpyHostToDevice);
     printf("cuda memcpy complete\n");
-    // Convolution99x11<<<BLOCK, THREAD>>>(pImg[0], pImgConv2, pImg[0].rows, pImg[0].cols);
-    // void* args[] = {(void*)&rowf, (void*)&colf, (void*)&pImg[0].rows, (void*)&pImg[0].cols};
+
     intTrimData<<<16, THREAD>>>(rowf, colf, pImg[0].rows, pImg[0].cols);
+
+    cudaMalloc(&srcImg, pImg[0].cols * pImg[0].rows * sizeof(unsigned char));
+    cudaMalloc(&firstConv, pImg[0].cols * pImg[0].rows * sizeof(float) * CONV2_FILTERS);
+    printf("cuda malloc complete\n");
     cudaDeviceSynchronize();
     printf("intTrim init complete\n");
 
     start = tick::getCurrent();
-    Convolution99x11<<<BLOCK, THREAD>>>(srcImg, dstImg, rowf, colf, pImg[0].rows, pImg[0].cols);
+    Convolution99x11<<<BLOCK, THREAD>>>(srcImg, firstConv, rowf, colf, pImg[0].rows, pImg[0].cols);
+    cudaMalloc(&dstImg, pImg[0].cols * pImg[0].rows * sizeof(unsigned char));
+    printf("cuda malloc complete\n");
     cudaDeviceSynchronize();
     end = tick::getCurrent();
-
     printf("cuda Convolution99x11 complete\n");
-    cudaMemcpy(pImgConv2Float, dstImg, pImg[0].cols * pImg[0].rows * sizeof(float) * CONV2_FILTERS, cudaMemcpyDeviceToHost);
-    printf("cuda memcpy complete\n");
-
-    for (int i = 0; i < CONV2_FILTERS; i++)
-        pImgConv2[i] = cv::Mat(pImg[0].size(), CV_32F, &(pImgConv2Float[i * pImg[0].cols * pImg[0].rows])).clone();
-    // cudaDeviceSynchronize();
-    free(pImgConv2Float);
 
     printf("\n  Convolution: %u us.\n", tick::getDiff(start, end));
     if (opt_verbose == true) {
@@ -566,12 +544,29 @@ void* pthreadcall(void* p) {
         printf("- Processing convolutional layer III ... ");
         fflush(stdout);
     }
+    // second conv
 
     cv::Mat pImgConv3;
     pImgConv3.create(pImg[0].size(), CV_8U);
     start = tick::getCurrent();
-    Convolution55(pImgConv2, pImgConv3, weights_conv3_data, biases_conv3);
+    intTrimData2<<<16, THREAD>>>(rowf, colf, pImg[0].rows, pImg[0].cols);
+
+    cudaDeviceSynchronize();
+    printf("\nintTrim init complete\n");
+
+    
+
+    start = tick::getCurrent();
+    Convolution55<<<BLOCK, THREAD>>>(firstConv, dstImg, rowf, colf, pImg[0].rows, pImg[0].cols);
+    cudaDeviceSynchronize();
+    printf("cuda Convolution55 complete\n");
     end = tick::getCurrent();
+
+    unsigned char* convImg = (unsigned char*)malloc(pImg[0].size().area() * sizeof(unsigned char));
+    cudaMemcpy(convImg, dstImg, pImg[0].cols * pImg[0].rows * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    pImgConv3 = cv::Mat(pImg[0].size(), CV_8U, convImg).clone();
+    free(convImg);
+
     printf("\n  Convolution: %u us.\n", tick::getDiff(start, end));
     if (opt_verbose == true) {
         printf("completed.\n");

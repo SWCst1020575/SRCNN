@@ -34,7 +34,7 @@ unsigned long getTickCount() {
 std::chrono::_V2::steady_clock::time_point getCurrent() {
     return std::chrono::steady_clock::now();
 }
-unsigned long getDiff(std::chrono::_V2::steady_clock::time_point start, std::chrono::_V2::steady_clock::time_point end) {
+unsigned getDiff(std::chrono::_V2::steady_clock::time_point start, std::chrono::_V2::steady_clock::time_point end) {
     return std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
 }
 };  // namespace tick
