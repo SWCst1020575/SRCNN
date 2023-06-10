@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <iostream>
 #include <string>
 #ifndef NO_OMP
 #include <omp.h>
@@ -24,7 +25,7 @@
 
 #include "srcnn.h"
 #include "tick.h"
-
+#include "video.h"
 /* pre-calculated convolutional data */
 #include "convdata.h"
 #include "convdataCuda.cuh"
@@ -34,8 +35,6 @@
 #define BLOCK 2048
 
 static float image_multiply = 2.0f;
-static unsigned image_width = 0;
-static unsigned image_height = 0;
 static bool opt_verbose = true;
 static bool opt_debug = false;
 static bool opt_help = false;
@@ -45,6 +44,24 @@ static std::string path_me;
 static std::string file_me;
 static std::string file_src;
 static std::string file_dst;
+
+pthread_mutex_t waitVideoMutex;
+std::list<cv::Mat> frameList;
+std::vector<cv::Mat> frameListComplete;
+bool isVideoComplete = false;
+bool isVideo = false;
+
+unsigned src_width = 0;
+unsigned src_height = 0;
+unsigned dst_width = 0;
+unsigned dst_height = 0;
+
+std::vector<cv::Mat> pImg(3);
+std::vector<cv::Mat> pImgYCrCbCh(3);
+cv::Mat pImgOrigin;
+cv::Mat pImgYCrCb;
+cv::Mat pImgYCrCbOut;
+cv::Mat pImgBGROut;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -64,7 +81,10 @@ __global__ void Convolution55(float* src, unsigned char* dst, int* rowf, int* co
 __global__ void Convolution99x11(unsigned char* src, float* dst, int* rowf, int* colf, int height, int width);
 
 ////////////////////////////////////////////////////////////////////////////////
-
+void setSrcSize(unsigned height, unsigned width) {
+    src_height = height;
+    src_width = width;
+}
 static inline int IntTrim(int a, int b, int c) {
     int buff[3] = {a, c, b};
     return buff[(int)(c > a) + (int)(c > b)];
@@ -332,7 +352,6 @@ bool parseArgs(int argc, char** argv) {
 
             file_dst = convname;
         }
-
         if ((file_src.size() > 0) && (file_dst.size() > 0)) {
             return true;
         }
@@ -361,32 +380,8 @@ void printHelp() {
     printf("\n");
 }
 
-void* pthreadcall(void* p) {
-    if (opt_verbose == true) {
-        printTitle();
-        printf("\n");
-        printf("- Scale multiply ratio : %.2f\n", image_multiply);
-        fflush(stdout);
-    }
-
+void* srcnnImage(void* p) {
     /* Read the original image */
-    cv::Mat pImgOrigin;
-    pImgOrigin = cv::imread(file_src.c_str());
-
-    if (pImgOrigin.empty() == false) {
-        if (opt_verbose == true) {
-            printf("- Image load : %s\n", file_src.c_str());
-            fflush(stdout);
-        }
-    } else {
-        if (opt_verbose == true) {
-            printf("- load failure : %s\n", file_src.c_str());
-        }
-
-        t_exit_code = -1;
-        pthread_exit(&t_exit_code);
-    }
-
     // Test image resize target ...
     cv::Size testsz = pImgOrigin.size();
     if ((((float)testsz.width * image_multiply) <= 0.f) ||
@@ -395,12 +390,11 @@ void* pthreadcall(void* p) {
             printf("- Image scale error : ratio too small.\n");
         }
 
-        t_exit_code = -1;
-        pthread_exit(&t_exit_code);
+        threadExit(-1);
     }
-
+    dst_width = testsz.width * image_multiply;
+    dst_height = testsz.height * image_multiply;
     // -------------------------------------------------------------
-
     if (opt_verbose == true) {
         printf("- Image converting to Y-Cr-Cb : ");
         fflush(stdout);
@@ -409,7 +403,6 @@ void* pthreadcall(void* p) {
     unsigned perf_tick0 = tick::getTickCount();
 
     /* Convert the image from BGR to YCrCb Space */
-    cv::Mat pImgYCrCb;
     auto start = tick::getCurrent();
     cvtColor(pImgOrigin, pImgYCrCb, CV_BGR2YCrCb);
     auto end = tick::getCurrent();
@@ -423,8 +416,7 @@ void* pthreadcall(void* p) {
             printf("Failure.\n");
         }
 
-        t_exit_code = -2;
-        pthread_exit(&t_exit_code);
+        threadExit(-2);
     }
 
     // ------------------------------------------------------------
@@ -435,7 +427,6 @@ void* pthreadcall(void* p) {
     }
 
     /* Split the Y-Cr-Cb channel */
-    std::vector<cv::Mat> pImgYCrCbCh(3);
     start = tick::getCurrent();
     split(pImgYCrCb, pImgYCrCbCh);
     end = tick::getCurrent();
@@ -447,8 +438,7 @@ void* pthreadcall(void* p) {
     } else {
         if (opt_verbose == true) {
             printf("Failure.\n");
-            t_exit_code = -3;
-            pthread_exit(&t_exit_code);
+            threadExit(-3);
         }
     }
 
@@ -459,7 +449,6 @@ void* pthreadcall(void* p) {
     }
 
     /* Resize the Y-Cr-Cb Channel with Bicubic Interpolation */
-    std::vector<cv::Mat> pImg(3);
     start = tick::getCurrent();
 #pragma omp parallel for
     for (int i = 0; i < 3; i++) {
@@ -467,12 +456,7 @@ void* pthreadcall(void* p) {
         newsz.width *= image_multiply;
         newsz.height *= image_multiply;
 
-        resize(pImgYCrCbCh[i],
-               pImg[i],
-               newsz,
-               0,
-               0,
-               CV_INTER_CUBIC);
+        resize(pImgYCrCbCh[i], pImg[i], newsz, 0, 0, CV_INTER_CUBIC);
     }
     end = tick::getCurrent();
     if (opt_verbose == true) {
@@ -481,25 +465,12 @@ void* pthreadcall(void* p) {
 
     // -----------------------------------------------------------
 
-    int cnt = 0;
-
     /******************* The First Layer *******************/
 
     if (opt_verbose == true) {
         printf("- Processing convolutional layer I + II ... ");
         fflush(stdout);
     }
-
-    std::vector<cv::Mat> pImgConv2(CONV2_FILTERS);
-    start = tick::getCurrent();
-
-    // #pragma omp parallel for
-    //     for (unsigned cnt = 0; cnt < CONV2_FILTERS; cnt++) {
-    //         pImgConv2[cnt].create(pImg[0].size(), CV_32F);
-    //     }
-    end = tick::getCurrent();
-    printf("\n  create: %u us.", tick::getDiff(start, end));
-
     // first conv
 
     unsigned char* srcImg;
@@ -508,33 +479,28 @@ void* pthreadcall(void* p) {
     int* colf;
     unsigned char* dstImg;
 
-    cudaMalloc(&rowf, (pImg[0].cols + 8) * sizeof(int));
-    cudaMalloc(&colf, (pImg[0].rows + 8) * sizeof(int));
-    
+    cudaMalloc(&rowf, (dst_height + 8) * sizeof(int));
+    cudaMalloc(&colf, (dst_width + 8) * sizeof(int));
+    cudaMalloc(&srcImg, dst_width * dst_height * sizeof(unsigned char));
+    cudaMalloc(&firstConv, dst_width * dst_height * sizeof(float) * CONV2_FILTERS);
+    cudaMalloc(&dstImg, dst_width * dst_height * sizeof(unsigned char));
     printf("\ncuda malloc complete\n");
-
-    cudaMemcpy(srcImg, pImg[0].data, pImg[0].cols * pImg[0].rows * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(srcImg, pImg[0].data, dst_width * dst_height * sizeof(unsigned char), cudaMemcpyHostToDevice);
     printf("cuda memcpy complete\n");
 
-    intTrimData<<<16, THREAD>>>(rowf, colf, pImg[0].rows, pImg[0].cols);
-
-    cudaMalloc(&srcImg, pImg[0].cols * pImg[0].rows * sizeof(unsigned char));
-    cudaMalloc(&firstConv, pImg[0].cols * pImg[0].rows * sizeof(float) * CONV2_FILTERS);
-    printf("cuda malloc complete\n");
+    intTrimData<<<16, THREAD>>>(rowf, colf, dst_height, dst_width);
+    intTrimData2<<<16, THREAD>>>(rowf, colf, dst_height, dst_width);
     cudaDeviceSynchronize();
     printf("intTrim init complete\n");
 
     start = tick::getCurrent();
-    Convolution99x11<<<BLOCK, THREAD>>>(srcImg, firstConv, rowf, colf, pImg[0].rows, pImg[0].cols);
-    cudaMalloc(&dstImg, pImg[0].cols * pImg[0].rows * sizeof(unsigned char));
-    printf("cuda malloc complete\n");
+    Convolution99x11<<<BLOCK, THREAD>>>(srcImg, firstConv, rowf, colf, dst_height, dst_width);
     cudaDeviceSynchronize();
     end = tick::getCurrent();
     printf("cuda Convolution99x11 complete\n");
-
-    printf("\n  Convolution: %u us.\n", tick::getDiff(start, end));
+    printf("  Convolution: %u us.\n", tick::getDiff(start, end));
     if (opt_verbose == true) {
-        printf("completed.\n");
+        printf("  completed.\n");
         fflush(stdout);
     }
 
@@ -546,37 +512,26 @@ void* pthreadcall(void* p) {
     }
     // second conv
 
-    cv::Mat pImgConv3;
-    pImgConv3.create(pImg[0].size(), CV_8U);
     start = tick::getCurrent();
-    intTrimData2<<<16, THREAD>>>(rowf, colf, pImg[0].rows, pImg[0].cols);
-
+    Convolution55<<<BLOCK, THREAD>>>(firstConv, dstImg, rowf, colf, dst_height, dst_width);
+    unsigned char* convImg = (unsigned char*)malloc(dst_height * dst_width * sizeof(unsigned char));
     cudaDeviceSynchronize();
-    printf("\nintTrim init complete\n");
-
-    
-
-    start = tick::getCurrent();
-    Convolution55<<<BLOCK, THREAD>>>(firstConv, dstImg, rowf, colf, pImg[0].rows, pImg[0].cols);
-    cudaDeviceSynchronize();
-    printf("cuda Convolution55 complete\n");
+    printf("\ncuda Convolution55 complete\n");
     end = tick::getCurrent();
 
-    unsigned char* convImg = (unsigned char*)malloc(pImg[0].size().area() * sizeof(unsigned char));
-    cudaMemcpy(convImg, dstImg, pImg[0].cols * pImg[0].rows * sizeof(unsigned char), cudaMemcpyDeviceToHost);
-    pImgConv3 = cv::Mat(pImg[0].size(), CV_8U, convImg).clone();
+    cudaMemcpy(convImg, dstImg, dst_height * dst_width * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    cv::Mat pImgConv3 = cv::Mat(pImg[0].size(), CV_8U, convImg).clone();
     free(convImg);
 
-    printf("\n  Convolution: %u us.\n", tick::getDiff(start, end));
+    printf("  Convolution: %u us.\n", tick::getDiff(start, end));
     if (opt_verbose == true) {
-        printf("completed.\n");
+        printf("  completed.\n");
         printf("- Merging images : ");
         fflush(stdout);
     }
-    cudaDeviceReset();
+
     /* Merge the Y-Cr-Cb Channel into an image */
     start = tick::getCurrent();
-    cv::Mat pImgYCrCbOut;
     pImg[0] = pImgConv3;
     merge(pImg, pImgYCrCbOut);
     end = tick::getCurrent();
@@ -593,7 +548,6 @@ void* pthreadcall(void* p) {
     }
 
     /* Convert the image from YCrCb to BGR Space */
-    cv::Mat pImgBGROut;
     start = tick::getCurrent();
     cvtColor(pImgYCrCbOut, pImgBGROut, CV_YCrCb2BGR);
     end = tick::getCurrent();
@@ -615,9 +569,7 @@ void* pthreadcall(void* p) {
         if (opt_verbose == true) {
             printf("Failure.\n");
         }
-
-        t_exit_code = -10;
-        pthread_exit(&t_exit_code);
+        threadExit(-10);
     }
 
     if (opt_verbose == true) {
@@ -626,8 +578,129 @@ void* pthreadcall(void* p) {
 
     fflush(stdout);
 
-    t_exit_code = 0;
-    pthread_exit(NULL);
+    threadExit(0);
+    return NULL;
+}
+
+void* srcnnVideo(void* p) {
+    /* Read the original image */
+
+    // Test image resize target ...
+    unsigned char* srcImg;
+    float* firstConv;
+    int *rowf, *rowf2;
+    int *colf, *colf2;
+    unsigned char* dstImg;
+    unsigned frameNum = 1;
+    pthread_mutex_lock(&waitVideoMutex);
+    if ((((float)src_width * image_multiply) <= 0.f) ||
+        (((float)src_height * image_multiply) <= 0.f)) {
+        if (opt_verbose == true) {
+            printf("- Image scale error : ratio too small.\n");
+        }
+
+        threadExit(-1);
+    }
+
+    dst_height = src_height * image_multiply;
+    dst_width = src_width * image_multiply;
+
+    cudaMalloc(&rowf, (dst_height + 8) * sizeof(int));
+    cudaMalloc(&colf, (dst_width + 8) * sizeof(int));
+    cudaMalloc(&rowf2, (dst_height + 8) * sizeof(int));
+    cudaMalloc(&colf2, (dst_width + 8) * sizeof(int));
+    cudaMalloc(&srcImg, dst_width * dst_height * sizeof(unsigned char));
+    cudaMalloc(&firstConv, dst_width * dst_height * sizeof(float) * CONV2_FILTERS);
+    cudaMalloc(&dstImg, dst_width * dst_height * sizeof(unsigned char));
+    intTrimData<<<16, THREAD>>>(rowf, colf, dst_height, dst_width);
+    intTrimData2<<<16, THREAD>>>(rowf2, colf2, dst_height, dst_width);
+    cudaDeviceSynchronize();
+    unsigned char* convImg = (unsigned char*)malloc(dst_width * dst_height * sizeof(unsigned char));
+    while (!isVideoComplete || !frameList.empty()) {
+        while (frameList.empty()) {
+        }
+
+        // -------------------------------------------------------------
+
+        /* Convert the image from BGR to YCrCb Space */
+        // pImgOrigin = cv::imread("Pictures/test.jpg");
+        // cvtColor(pImgOrigin, pImgYCrCb, CV_BGR2YCrCb);
+        cvtColor(*frameList.begin(), pImgYCrCb, CV_BGR2YCrCb);
+        if (pImgYCrCb.empty()) {
+            if (opt_verbose == true) {
+                printf("Failure.\n");
+            }
+            threadExit(-2);
+        }
+
+        // ------------------------------------------------------------
+
+        /* Split the Y-Cr-Cb channel */
+
+        split(pImgYCrCb, pImgYCrCbCh);
+        if (pImgYCrCb.empty()) {
+            if (opt_verbose == true) {
+                printf("Failure.\n");
+                threadExit(-3);
+            }
+        }
+
+        // ------------------------------------------------------------
+
+        /* Resize the Y-Cr-Cb Channel with Bicubic Interpolation */
+
+#pragma omp parallel for
+        for (int i = 0; i < 3; i++)
+            resize(pImgYCrCbCh[i], pImg[i], cv::Size(dst_width, dst_height), 0, 0, CV_INTER_CUBIC);
+
+        // first conv
+        cudaMemcpy(srcImg, pImg[0].data, pImg[0].cols * pImg[0].rows * sizeof(unsigned char), cudaMemcpyHostToDevice);
+        Convolution99x11<<<BLOCK, THREAD>>>(srcImg, firstConv, rowf, colf, pImg[0].rows, pImg[0].cols);
+        cudaDeviceSynchronize();
+
+        /******************* The Third Layer *******************/
+
+        // second conv
+
+        Convolution55<<<BLOCK, THREAD>>>(firstConv, dstImg, rowf2, colf2, pImg[0].rows, pImg[0].cols);
+        cudaDeviceSynchronize();
+
+        cudaMemcpy(convImg, dstImg, pImg[0].cols * pImg[0].rows * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+        cv::Mat pImgConv3 = cv::Mat(pImg[0].size(), CV_8U, convImg).clone();
+
+        /* Merge the Y-Cr-Cb Channel into an image */
+
+        pImg[0] = pImgConv3;
+        merge(pImg, pImgYCrCbOut);
+        // ---------------------------------------------------------
+
+        /* Convert the image from YCrCb to BGR Space */
+
+        cvtColor(pImgYCrCbOut, pImgBGROut, CV_YCrCb2BGR);
+        unsigned perf_tick1 = tick::getTickCount();
+
+        if (pImgBGROut.empty()) {
+            if (opt_verbose == true) {
+                printf("Failure.\n");
+            }
+            threadExit(-10);
+        }
+        frameListComplete.push_back(pImgBGROut.clone());
+        (*frameList.begin()).release();
+        for (auto it : pImg)
+            it.release();
+        for (auto it : pImgYCrCbCh)
+            it.release();
+        pImgYCrCb.release();
+        pImgYCrCbOut.release();
+        pImgBGROut.release();
+        frameList.pop_front();
+        std::cout << "Frame: " << frameNum << '\r' << std::flush;  // dump progress
+        ++frameNum;
+    }
+    free(convImg);
+    fflush(stdout);
+    threadExit(0);
     return NULL;
 }
 
@@ -645,16 +718,53 @@ int main(int argc, char** argv) {
         fflush(stdout);
         return 0;
     }
-
-    pthread_t ptt;
+    if (opt_verbose == true) {
+        printTitle();
+        printf("\n");
+        printf("- Scale multiply ratio : %.2f\n", image_multiply);
+        fflush(stdout);
+    }
+    pthread_t processVideoTid, ptt;
     int tid = 0;
-    if (pthread_create(&ptt, NULL, pthreadcall, &tid) == 0) {
-        // Wait for thread ends ..
+    pImgOrigin = cv::imread(file_src.c_str());
+    if (!pImgOrigin.empty()) {
+        if (opt_verbose == true) {
+            printf("- Image load : %s\n", file_src.c_str());
+            fflush(stdout);
+        }
+        // image
+        if (pthread_create(&ptt, NULL, srcnnImage, &tid) != 0)
+            printf("Error: pthread failure.\n");
+
         pthread_join(ptt, NULL);
     } else {
-        printf("Error: pthread failure.\n");
+        if (opt_verbose == true) {
+            printf("- Video load : %s\n", file_src.c_str());
+            fflush(stdout);
+        }
+        // video
+        pthread_mutex_init(&waitVideoMutex, 0);
+        if (pthread_create(&processVideoTid, NULL, processVideo, (void*)file_src.c_str()) != 0)
+            printf("Error: pthread failure.\n");
+        if (pthread_create(&ptt, NULL, srcnnVideo, &tid) != 0)
+            printf("Error: pthread failure.\n");
+        pthread_join(processVideoTid, NULL);
+        pthread_join(ptt, NULL);
+        printf("Complete.\n");
     }
+    // cv::imwrite(file_dst.c_str(), **frameList.begin());
+    //  if (pthread_create(&ptt, NULL, pthreadcall, &tid) == 0) {
+    //      // Wait for thread ends ..
+    //      pthread_join(ptt, NULL);
+    //  } else {
+    //      printf("Error: pthread failure.\n");
+    //  }
 
     return t_exit_code;
+}
+void threadExit(int code) {
+    cudaDeviceReset();
+    t_exit_code = code;
+    pthread_exit(&t_exit_code);
 }
 #endif  /// of EXPORTLIBSRCNN

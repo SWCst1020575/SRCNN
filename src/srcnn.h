@@ -11,7 +11,8 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include <cuda_runtime.h>
 
-
+void threadExit(int);
+void setSrcSize(unsigned,unsigned);
 #endif  /// of EXPORTLIBSRCNN
 
 #endif  /// of __SRCNN_H__
