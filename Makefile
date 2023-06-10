@@ -8,6 +8,9 @@ AR  = ar
 
 OPENCV_INCS := `pkg-config --cflags opencv4`
 OPENCV_LIBS := `pkg-config --libs opencv4`
+FFMPEG_INCS := `pkg-config --cflags libavcodec libavformat libavutil libswscale`
+FFMPEG_LIBS := `pkg-config --libs libavcodec libavformat libavutil libswscale`
+
 
 SRC_PATH = src
 OBJ_PATH = obj
@@ -18,6 +21,7 @@ SRCS += $(SRC_PATH)/frawscale.cpp
 SRCS += $(SRC_PATH)/tick.cpp
 # SRCS += $(SRC_PATH)/srcnn.cpp
 SRCS += $(SRC_PATH)/convdata.cpp
+SRCS += $(SRC_PATH)/video.cpp
 OBJS = $(SRCS:$(SRC_PATH)/%.cpp=$(OBJ_PATH)/%.o)
 
 SRCS_CUDA = $(SRC_PATH)/convdataCuda.cu
@@ -27,10 +31,12 @@ OBJS_CUDA = $(SRCS_CUDA:$(SRC_PATH)/%.cu=$(OBJ_PATH)/%.o)
 CFLAGS  =  -Xcompiler -fopenmp -rdc=true
 CFLAGS += -I$(SRC_PATH)
 CFLAGS += $(OPENCV_INCS)
+CFLAGS += $(FFMPEG_INCS)
 
 # Static build may require static-configured openCV.
 LFLAGS  =
 LFLAGS += $(OPENCV_LIBS)
+LFLAGS += $(FFMPEG_LIBS)
 LFLAGS += -Xcompiler -static-libgcc -Xcompiler -static-libstdc++
 LFLAGS += -Xcompiler -s -Xcompiler -ffast-math -O3
 

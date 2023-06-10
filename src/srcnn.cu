@@ -593,6 +593,7 @@ void* srcnnVideo(void* p) {
     unsigned char* dstImg;
     unsigned frameNum = 1;
     pthread_mutex_lock(&waitVideoMutex);
+    auto start = tick::getCurrent();
     if ((((float)src_width * image_multiply) <= 0.f) ||
         (((float)src_height * image_multiply) <= 0.f)) {
         if (opt_verbose == true) {
@@ -698,6 +699,8 @@ void* srcnnVideo(void* p) {
         std::cout << "Frame: " << frameNum << '\r' << std::flush;  // dump progress
         ++frameNum;
     }
+    auto end = tick::getCurrent();
+    std::cout << "Convolutional video time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
     free(convImg);
     fflush(stdout);
     threadExit(0);
