@@ -107,6 +107,10 @@ If the compile is successful, you will see linked binary in 'bin' directory.
 
 The generated image will be `./Pictures/test_resized.jpg`.
 
+For video version
+```bash
+./bin/srcnn ./Video/test.mp4 ./Video/out.mp4
+```
 
 
 

@@ -12,8 +12,9 @@ extern "C" {
 #include <stdexcept>
 
 #include "srcnn.h"
+AVCodecContext* c;
+static void encode(AVCodecContext*, AVFrame*, AVPacket*, FILE*);
 void* processVideo(void* file) {
-    pthread_mutex_lock(&waitVideoMutex);
     av_register_all();
     AVFormatContext* inctx = nullptr;
 
@@ -40,9 +41,11 @@ void* processVideo(void* file) {
         std::cerr << "fail to avcodec_open2: ret=" << ret;
         threadExit(-1);
     }
-
+    c = avcodec_alloc_context3(vcodec);
+    avcodec_copy_context(c, vstrm->codec);
     const int dst_width = vstrm->codec->width;
     const int dst_height = vstrm->codec->height;
+
     setSrcSize(dst_height, dst_width);
 
     const AVPixelFormat dst_pix_fmt = AV_PIX_FMT_BGR24;
@@ -60,7 +63,7 @@ void* processVideo(void* file) {
     avpicture_fill(reinterpret_cast<AVPicture*>(frame), framebuf.data(), dst_pix_fmt, dst_width, dst_height);
     // decoding loop
     AVFrame* decframe = av_frame_alloc();
-    unsigned nb_frames = 0;
+    nb_frames = 0;
     bool end_of_stream = false;
     int got_pic = 0;
     AVPacket pkt;
@@ -98,7 +101,7 @@ void* processVideo(void* file) {
         //     break;
 
         // std::cout << nb_frames << '\r' << std::flush;  // dump progress
-        // ++nb_frames;
+        ++nb_frames;
     next_packet:
         av_free_packet(&pkt);
     } while (!end_of_stream || got_pic);
@@ -107,4 +110,102 @@ void* processVideo(void* file) {
     avcodec_close(vstrm->codec);
     avformat_close_input(&inctx);
     isVideoComplete = true;
+}
+void* combineVideo(void* file) {
+    pthread_mutex_lock(&videoCompleteMutex);
+    av_log_set_level(AV_LOG_FATAL);
+    uint8_t endcode[] = {0, 0, 1, 0xb7};
+    FILE* f;
+    f = fopen((char*)file, "wb");
+    const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+    if (!codec) {
+        std::cerr << "Error finding H.264 encoder" << std::endl;
+        threadExit(-1);
+    }
+    
+    AVCodecContext* codec_ctx = avcodec_alloc_context3(codec);
+    codec_ctx->codec_id = c->codec_id;
+    codec_ctx->codec_type = c->codec_type;
+    codec_ctx->width = frameListComplete[0].cols;
+    codec_ctx->height = frameListComplete[0].rows;
+    codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+    codec_ctx->bit_rate = c->bit_rate;
+    codec_ctx->time_base = (AVRational){c->framerate.den, c->framerate.num};
+    codec_ctx->framerate = (AVRational){c->framerate.num, c->framerate.den};
+    codec_ctx->codec_tag = c->codec_tag;
+    codec_ctx->gop_size = c->gop_size;
+    codec_ctx->max_b_frames = c->max_b_frames;
+    codec_ctx->flags = c->flags;
+    // stream->time_base = c->time_base;
+    AVDictionary* opt = NULL;
+
+    if (avcodec_open2(codec_ctx, codec, &opt) < 0) {
+        std::cerr << "Error opening codec." << std::endl;
+        avcodec_free_context(&codec_ctx);
+        threadExit(-1);
+    }
+    AVFrame* frame = av_frame_alloc();
+    av_image_alloc(frame->data, frame->linesize, codec_ctx->width, codec_ctx->height,
+                   AVPixelFormat::AV_PIX_FMT_YUV420P, 1);
+    SwsContext* conversion = sws_getContext(
+        codec_ctx->width, codec_ctx->height, AVPixelFormat::AV_PIX_FMT_BGR24,  // codec_ctx->pix_fmt,  <--- The source format comes from the input AVFrame
+        codec_ctx->width, codec_ctx->height, AV_PIX_FMT_YUV420P, SWS_BICUBIC, nullptr, nullptr, nullptr);
+    frame->format = AV_PIX_FMT_YUV420P;
+    frame->width = codec_ctx->width;
+    frame->height = codec_ctx->height;
+    if (av_frame_get_buffer(frame, 0) < 0) {
+        std::cerr << "Could not allocate the video frame data\n";
+        avcodec_free_context(&codec_ctx);
+        av_frame_free(&frame);
+        threadExit(-1);
+    }
+
+    AVPacket* pkt = av_packet_alloc();
+    for (completeFrame = 0; completeFrame < nb_frames; completeFrame++) {
+        while (completeFrame == frameListComplete.size()) {
+        }
+        int cvLinesizes[1];
+        cvLinesizes[0] = frameListComplete[completeFrame].step1();
+       
+
+        sws_scale(conversion, &frameListComplete[completeFrame].data, cvLinesizes, 0, frameListComplete[completeFrame].rows, frame->data,
+                  frame->linesize);
+        frame->pts = completeFrame + 1;
+        encode(codec_ctx, frame, pkt, f);
+    }
+    if (codec->id == AV_CODEC_ID_MPEG1VIDEO || codec->id == AV_CODEC_ID_MPEG2VIDEO)
+        fwrite(endcode, 1, sizeof(endcode), f);
+    fclose(f);
+    av_packet_free(&pkt);
+    sws_freeContext(conversion);
+    av_frame_free(&frame);
+    avcodec_free_context(&c);
+    avcodec_free_context(&codec_ctx);
+}
+static void encode(AVCodecContext* enc_ctx, AVFrame* frame, AVPacket* pkt, FILE* outfile) {
+    int ret;
+
+    /* send the frame to the encoder */
+    // if (frame)
+    //     printf("Send frame %3" PRId64 "\n", frame->pts);
+
+    ret = avcodec_send_frame(enc_ctx, frame);
+    if (ret < 0) {
+        std::cerr << "Error sending a frame for encoding.\n";
+        // fprintf(stderr, "Error sending a frame for encoding\n");
+        exit(1);
+    }
+
+    while (ret >= 0) {
+        ret = avcodec_receive_packet(enc_ctx, pkt);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+            return;
+        else if (ret < 0) {
+            fprintf(stderr, "Error during encoding\n");
+            exit(1);
+        }
+        // printf("Write packet %3" PRId64 " (size=%5d)\n", pkt->pts, pkt->size);
+        fwrite(pkt->data, 1, pkt->size, outfile);
+        av_packet_unref(pkt);
+    }
 }

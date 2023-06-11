@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <iomanip>
 #include <iostream>
 #include <string>
 #ifndef NO_OMP
@@ -46,8 +47,11 @@ static std::string file_src;
 static std::string file_dst;
 
 pthread_mutex_t waitVideoMutex;
+pthread_mutex_t videoCompleteMutex;
 std::list<cv::Mat> frameList;
 std::vector<cv::Mat> frameListComplete;
+unsigned nb_frames;
+unsigned completeFrame = 0;
 bool isVideoComplete = false;
 bool isVideo = false;
 
@@ -696,15 +700,19 @@ void* srcnnVideo(void* p) {
         pImgYCrCbOut.release();
         pImgBGROut.release();
         frameList.pop_front();
-        std::cout << "Frame: " << frameNum << '\r' << std::flush;  // dump progress
+        if (isVideoComplete)
+            std::cout << "- Convolutional process: " << (double)frameNum / (double)nb_frames * 100 << "%" << '\r' << std::flush;
+        else
+            std::cout << "- Extracted frames: " << nb_frames << '\r' << std::flush;
         ++frameNum;
+        pthread_mutex_unlock(&videoCompleteMutex);
     }
+
     auto end = tick::getCurrent();
-    std::cout << "Convolutional video time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+    std::cout << "- Convolutional video time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
     free(convImg);
     fflush(stdout);
     threadExit(0);
-    return NULL;
 }
 
 /***
@@ -727,7 +735,7 @@ int main(int argc, char** argv) {
         printf("- Scale multiply ratio : %.2f\n", image_multiply);
         fflush(stdout);
     }
-    pthread_t processVideoTid, ptt;
+    pthread_t processVideoTid, combineVideoTid, ptt;
     int tid = 0;
     pImgOrigin = cv::imread(file_src.c_str());
     if (!pImgOrigin.empty()) {
@@ -746,13 +754,20 @@ int main(int argc, char** argv) {
             fflush(stdout);
         }
         // video
+        std::cout << std::fixed << std::setprecision(2);
         pthread_mutex_init(&waitVideoMutex, 0);
+        pthread_mutex_init(&videoCompleteMutex, 0);
+        pthread_mutex_lock(&waitVideoMutex);
+        pthread_mutex_lock(&videoCompleteMutex);
         if (pthread_create(&processVideoTid, NULL, processVideo, (void*)file_src.c_str()) != 0)
             printf("Error: pthread failure.\n");
         if (pthread_create(&ptt, NULL, srcnnVideo, &tid) != 0)
             printf("Error: pthread failure.\n");
+        if (pthread_create(&combineVideoTid, NULL, combineVideo, (void*)file_dst.c_str()) != 0)
+            printf("Error: pthread failure.\n");
         pthread_join(processVideoTid, NULL);
         pthread_join(ptt, NULL);
+        pthread_join(combineVideoTid, NULL);
         printf("Complete.\n");
     }
     // cv::imwrite(file_dst.c_str(), **frameList.begin());
